@@ -22,6 +22,7 @@ from auditix.config import Settings, load_dotenv_file
 
 
 def _add_common_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the flags shared by the two audit commands (audit-local and audit-repo)."""
     parser.add_argument("-o", "--output", type=Path, help="folder for audit_results.json / audit_report.pdf")
     parser.add_argument("--policies", type=Path, help="policy file (.txt, .md or .pdf)")
     parser.add_argument("--classifier", type=Path, help="folder with the fine-tuned CodeBERT adapter")
@@ -35,6 +36,10 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def _settings_from_args(args: argparse.Namespace) -> Settings:
+    """Combine defaults, environment variables and command-line flags into one Settings object.
+
+    Only flags that were actually given override the environment (``None`` / False means "not given").
+    """
     settings = Settings.from_env()
     overrides: dict = {}
     if getattr(args, "output", None):
@@ -47,14 +52,15 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         overrides["use_classifier"] = False
     if getattr(args, "no_explain_fast_path", False):
         overrides["explain_fast_path"] = False
-    return replace(settings, **overrides)
+    return replace(settings, **overrides)  # dataclasses.replace returns a modified copy
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Define all sub-commands and their arguments."""
     parser = argparse.ArgumentParser(prog="auditix", description="Policy-aware code compliance auditor")
     parser.add_argument("--version", action="version", version=f"auditix {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True)  # one sub-command is mandatory
 
     p_local = sub.add_parser("audit-local", help="audit a folder of Python files")
     p_local.add_argument("path", type=Path, help="folder to audit")
@@ -78,6 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_audit(args: argparse.Namespace, *, repo: bool) -> int:
+    """Run audit-local (repo=False) or audit-repo (repo=True) and print a summary."""
+    # Imported here so that `auditix --help` stays fast and does not load the heavy modules.
     from auditix.pipeline import build_context, run_audit_local, run_audit_repo
 
     settings = _settings_from_args(args)
@@ -103,6 +111,7 @@ def _run_audit(args: argparse.Namespace, *, repo: bool) -> int:
 
 
 def _run_build_index(args: argparse.Namespace) -> int:
+    """Embed the policies and save the FAISS index (reuses it if the policies are unchanged)."""
     from auditix.embeddings import GeminiEmbedder
     from auditix.policies import load_policies
     from auditix.policy_index import PolicyIndex
@@ -117,6 +126,7 @@ def _run_build_index(args: argparse.Namespace) -> int:
 
 
 def _run_train(args: argparse.Namespace) -> int:
+    """Start fine-tuning, or print install instructions if the training stack is missing."""
     try:
         from auditix.training.train import main as train_main
     except ImportError as exc:  # torch / transformers not installed
@@ -127,6 +137,7 @@ def _run_train(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Program entry point. Returns the process exit code (0 = success, 2 = handled error)."""
     parser = build_parser()
     args = parser.parse_args(argv)
     load_dotenv_file()  # reads ./.env from the project root if present
@@ -144,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "train":
             return _run_train(args)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        # Known, user-caused problems: print one clear line instead of a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 2
     parser.print_help()
