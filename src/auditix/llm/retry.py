@@ -18,8 +18,9 @@ from auditix.config import GROQ_API_URL, GROQ_TIMEOUT_SECONDS, get_groq_api_key
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_WAIT_SECONDS = 10.0
-PADDING_SECONDS = 1.0
+DEFAULT_WAIT_SECONDS = 10.0  # used when the error message has no wait hint
+PADDING_SECONDS = 1.0        # extra second added to every wait, to be safe
+# Matches "try again in 2.5s" or "try again in 800ms" in Groq's error text.
 _WAIT_RE = re.compile(r"try again in\s+([\d.]+)\s*(ms|s)\b", re.IGNORECASE)
 
 
@@ -31,9 +32,9 @@ def parse_wait_seconds(message: str, default: float = DEFAULT_WAIT_SECONDS) -> f
     """
     match = _WAIT_RE.search(message or "")
     if not match:
-        return default + PADDING_SECONDS
+        return default + PADDING_SECONDS  # no hint in the message: use the default
     value = float(match.group(1))
-    if match.group(2).lower() == "ms":
+    if match.group(2).lower() == "ms":  # convert milliseconds to seconds
         value /= 1000.0
     return round(value + PADDING_SECONDS, 3)
 
@@ -43,7 +44,7 @@ def call_groq_with_retry(
     max_retries: int = 5,
     *,
     api_key: str | None = None,
-    sleep=time.sleep,
+    sleep=time.sleep,  # injectable so tests can skip the real wait
 ) -> dict[str, Any]:
     """POST a chat-completion request, retrying on rate limits.
 
@@ -53,6 +54,7 @@ def call_groq_with_retry(
     """
     key = api_key or get_groq_api_key()
     if not key:
+        # Fail early with a clear message instead of sending an unauthenticated request.
         return {"error": {"message": "GROQ_API_KEY is not set"}}
 
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -63,19 +65,20 @@ def call_groq_with_retry(
         )
         try:
             data = response.json()
-        except ValueError:
+        except ValueError:  # e.g. an HTML error page from a proxy
             return {"error": {"message": f"Non-JSON response (HTTP {response.status_code})"}}
 
-        if "choices" in data:
+        if "choices" in data:  # success
             return data
 
         error = data.get("error", {}) or {}
         if error.get("code") != "rate_limit_exceeded":
-            return data  # a real error: do not retry
+            return data  # a real error (bad key, bad model...): retrying will not help
 
+        # Rate limited: wait the time Groq asked for, then try again.
         wait = parse_wait_seconds(error.get("message", ""))
         logger.warning("Groq rate limit; waiting %.1fs (attempt %d/%d)", wait, attempt, max_retries)
         sleep(wait)
 
     logger.error("Groq: max retries exceeded")
-    return data if data else {}
+    return data if data else {}  # last error payload, or an empty dict if nothing came back
