@@ -26,22 +26,27 @@ from auditix.config import AMBIGUITY_HIGH, AMBIGUITY_LOW, CRITICAL_THRESHOLD
 
 VALID_SEVERITIES = {"none", "low", "medium", "high", "critical"}
 
+# Route names. Both fast-path routes share the same label, as in the notebook's decision_path.
 ROUTE_AMBIGUOUS = "ambiguous→full-LLM"
 ROUTE_VIOLATION = "high-confidence→LLM-explain"
 ROUTE_COMPLIANT = "high-confidence→LLM-explain"
 
-# (chunk_name, code, summary, policies, classifier_hint) -> verdict dict
+# Signature of the LLM callback: (chunk_name, code, summary, policies, hint) -> verdict dict.
 LLMAudit = Callable[[str, str, str, Sequence[str], str], dict[str, Any]]
 
 
 class Classifier(Protocol):
+    """Anything with a ``violation_probability`` method (the real CodeBERT wrapper or a fake)."""
+
     def violation_probability(self, code: str, policy: str) -> float: ...
 
 
 @dataclass(frozen=True)
 class Routing:
+    """The outcome of routing one chunk."""
+
     route: str            # one of ROUTE_* above
-    max_probability: float
+    max_probability: float  # highest p(violation) across the policies checked
     is_violation: bool    # verdict implied by the classifier (ignored when ambiguous)
 
 
@@ -54,16 +59,17 @@ def severity_from_probability(probability: float) -> str:
             return "high"
         return "medium"
     if probability >= AMBIGUITY_LOW:
-        return "low"
+        return "low"  # kept for completeness; the caller only passes p above AMBIGUITY_HIGH
     return "none"
 
 
 def route_probabilities(probabilities: Sequence[float]) -> Routing:
     """Decide how a chunk should be handled from its per-policy probabilities."""
     if not probabilities:
-        return Routing(ROUTE_COMPLIANT, 0.0, False)
+        return Routing(ROUTE_COMPLIANT, 0.0, False)  # nothing to check: nothing to flag
 
     max_p = max(probabilities)
+    # Ambiguity wins: if any policy is uncertain, the LLM decides for the whole chunk.
     if any(AMBIGUITY_LOW <= p <= AMBIGUITY_HIGH for p in probabilities):
         return Routing(ROUTE_AMBIGUOUS, max_p, max_p > AMBIGUITY_HIGH)
     if any(p > AMBIGUITY_HIGH for p in probabilities):
@@ -72,6 +78,7 @@ def route_probabilities(probabilities: Sequence[float]) -> Routing:
 
 
 def normalize_severity(value: Any, compliant: bool) -> str:
+    """Return a valid severity label. Unknown values become "none" (compliant) or "unknown"."""
     severity = str(value or "").strip().lower()
     if severity in VALID_SEVERITIES:
         return severity
@@ -95,7 +102,7 @@ def audit_chunk_hybrid(
     """
     # ── LLM-only fallback (no classifier loaded) ─────────────────────────────
     if classifier is None:
-        verdict = llm_audit(chunk_name, code, summary, policies, "")
+        verdict = llm_audit(chunk_name, code, summary, policies, "")  # no hint without a classifier
         return _result(
             compliant=bool(verdict.get("compliant", False)),
             violations=list(verdict.get("violations", [])),
@@ -106,24 +113,27 @@ def audit_chunk_hybrid(
         )
 
     # ── Hybrid path ──────────────────────────────────────────────────────────
+    # One CodeBERT score per retrieved policy, then decide the route.
     probabilities = [classifier.violation_probability(code, p) for p in policies]
     routing = route_probabilities(probabilities)
     confidence = round(routing.max_probability, 4)
     flagged = [p for p, vp in zip(policies, probabilities) if vp > AMBIGUITY_HIGH]
 
     if routing.route == ROUTE_AMBIGUOUS:
+        # Uncertain: the LLM gives the verdict and is told the classifier was unsure.
         hint = (
             f"Fine-tuned CodeBERT: p(violation)={routing.max_probability:.1%}. "
             "The classifier is uncertain, so decide the verdict yourself and explain in detail."
         )
         verdict = llm_audit(chunk_name, code, summary, policies, hint)
-        compliant = bool(verdict.get("compliant", False))
+        compliant = bool(verdict.get("compliant", False))  # missing verdict counts as non-compliant
         violations = list(verdict.get("violations", []))
         explanation = str(verdict.get("explanation", ""))
         severity = normalize_severity(verdict.get("severity"), compliant)
         decision_path = f"[Hybrid/{ROUTE_AMBIGUOUS}]"
 
     else:
+        # Confident: the classifier's verdict is final. The LLM (optionally) only explains it.
         compliant = not routing.is_violation
         severity = severity_from_probability(routing.max_probability) if routing.is_violation else "none"
         decision_path = f"[Hybrid/{ROUTE_VIOLATION}]"
@@ -139,12 +149,14 @@ def audit_chunk_hybrid(
             explanation = str(llm.get("explanation", ""))
             llm_violations = list(llm.get("violations", []))
         else:
+            # Cost-saving mode: no API call, just a template explanation.
             explanation = (
                 f"Verdict from the fine-tuned CodeBERT classifier alone ({verdict_word}). "
                 "The LLM explanation was skipped (AUDITIX_EXPLAIN_FAST_PATH=0)."
             )
             llm_violations = []
 
+        # Keep the LLM's list if it gave one; otherwise name the policies the classifier flagged.
         violations = [] if compliant else (llm_violations or [f"Violates policy: {p}" for p in flagged])
 
     return _result(
@@ -166,6 +178,7 @@ def _result(
     confidence: float | None,
     decision_path: str,
 ) -> dict[str, Any]:
+    """Build the verdict dict with a fixed set of keys (the schema every caller relies on)."""
     return {
         "compliant": compliant,
         "violations": violations,
