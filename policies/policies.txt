@@ -1,0 +1,27 @@
+# Policy definitions for the Policy-Aware Code Compliance Auditor.
+# One policy per line. Lines starting with '#' and blank lines are ignored.
+# These are the same 12 policies that were hardcoded in complete_code.ipynb.
+
+# ── Payments ────────────────────────────────────────────────────────────────
+All payment transactions must be logged before and after execution using AuditLogger.
+Only approved payment providers may be used via PaymentService.
+No direct database updates to payment or order status are allowed.
+
+# ── Discounts / Offers ──────────────────────────────────────────────────────
+Discounts must not be hardcoded and must be configurable via the offer system.
+All discount applications must go through the OfferService or equivalent module.
+
+# ── Customer Data (GDPR-style) ──────────────────────────────────────────────
+Customer PII must only be accessed via Customer service classes.
+Customer email and personal data must not be directly queried from the database.
+
+# ── Communication ───────────────────────────────────────────────────────────
+All user communications must go through a centralized communication service.
+User opt-out preferences must always be respected before sending emails.
+
+# ── Architecture / Workflow ─────────────────────────────────────────────────
+Business logic must not bypass service layers and directly manipulate database models.
+All order state transitions must follow the defined workflow system.
+
+# ── Logging & Observability ─────────────────────────────────────────────────
+Critical operations must include structured logging for auditing purposes.
