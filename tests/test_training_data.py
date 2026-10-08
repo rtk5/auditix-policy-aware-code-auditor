@@ -10,20 +10,24 @@ from pathlib import Path
 
 from auditix.training.config import TrainConfig
 
+# Real policies from the repo, so assignment is tested on the actual list.
 POLICIES = load_policies(Path(__file__).resolve().parents[1] / "policies" / "policies.txt")
 
 
+# Code that mentions payments is paired with the payment policy.
 def test_assign_policy_uses_keywords_first():
     code = "def charge_card(amount): create_payment_transaction(amount)"
     assert assign_policy(code, POLICIES).startswith("All payment transactions")
 
 
+# Code with no keyword gets the same policy every run (stable hash, not random).
 def test_assign_policy_is_deterministic_for_unmatched_code():
     code = "def zzz(): return 42"
     assert assign_policy(code, POLICIES) == assign_policy(code, POLICIES)
     assert stable_index(code, 12) == stable_index(code, 12)
 
 
+# Duplicates across sources are kept once, empty rows are dropped, classes are balanced.
 def test_merge_removes_duplicates_across_sources_and_balances():
     samples = [
         make_sample("code A", POLICIES[0], 1, "src1"),
@@ -39,6 +43,7 @@ def test_merge_removes_duplicates_across_sources_and_balances():
     assert sum(s["label"] for s in balanced) == 2        # 50 / 50
 
 
+# Training needs both classes, so a one-class input is an error.
 def test_merge_raises_when_one_class_is_empty():
     import pytest
 
@@ -46,12 +51,14 @@ def test_merge_raises_when_one_class_is_empty():
         merge_dedupe_balance([make_sample("only violations", POLICIES[0], 1, "x")])
 
 
+# 80/10/10 of 100 items gives 80, 10 and 10.
 def test_split_ratios_cover_all_samples():
     data = [make_sample(f"c{i}", POLICIES[0], i % 2, "x") for i in range(100)]
     splits = split_dataset(data, 0.8, 0.1)
     assert (len(splits["train"]), len(splits["val"]), len(splits["test"])) == (80, 10, 10)
 
 
+# Guards the defaults against accidental change: they must match the notebook.
 def test_default_train_config_matches_notebook():
     cfg = TrainConfig()
     assert (cfg.lora_r, cfg.lora_alpha, cfg.lr, cfg.epochs, cfg.grad_accum) == (16, 32, 2e-4, 5, 2)
