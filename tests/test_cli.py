@@ -3,6 +3,7 @@ from pathlib import Path
 from auditix.cli import _settings_from_args, build_parser
 
 
+# Command-line flags override the default settings.
 def test_audit_local_flags_override_settings(monkeypatch):
     monkeypatch.delenv("AUDITIX_EXPLAIN_FAST_PATH", raising=False)
     args = build_parser().parse_args([
@@ -14,6 +15,7 @@ def test_audit_local_flags_override_settings(monkeypatch):
     assert settings.explain_fast_path is False
 
 
+# The environment variable can switch the LLM explanation off.
 def test_env_var_controls_fast_path(monkeypatch):
     from auditix.config import Settings
 
@@ -21,6 +23,7 @@ def test_env_var_controls_fast_path(monkeypatch):
     assert Settings.from_env().explain_fast_path is False
 
 
+# Each documented sub-command is accepted by the parser.
 def test_subcommands_are_registered():
     parser = build_parser()
     for command in ["audit-local", "audit-repo", "build-index", "train"]:
@@ -28,6 +31,7 @@ def test_subcommands_are_registered():
         assert args.command == command
 
 
+# .env fills in missing variables but never replaces values already set in the shell.
 def test_load_dotenv_file_does_not_override_shell(tmp_path, monkeypatch):
     from auditix.config import load_dotenv_file
 
@@ -43,6 +47,7 @@ def test_load_dotenv_file_does_not_override_shell(tmp_path, monkeypatch):
     monkeypatch.delenv("AUDITIX_TEST_NEW", raising=False)
 
 
+# A missing .env file is not an error.
 def test_load_dotenv_file_missing_is_noop(tmp_path):
     from auditix.config import load_dotenv_file
 
