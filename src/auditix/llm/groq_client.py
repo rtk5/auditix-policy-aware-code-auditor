@@ -19,11 +19,13 @@ from auditix.llm.retry import call_groq_with_retry
 
 logger = logging.getLogger(__name__)
 
+# System prompt for the summariser: short, business-focused description.
 SUMMARY_SYSTEM_PROMPT = (
     "You are a code analyst. Describe what this code does in 2-3 sentences, "
     "focusing on business logic, data access, and external calls."
 )
 
+# System prompt for the auditor: forces a JSON-only reply.
 AUDIT_SYSTEM_PROMPT = (
     "You are a policy compliance auditor. Always respond with valid JSON only. "
     "No markdown, no text outside the JSON object."
@@ -33,14 +35,18 @@ VALID_SEVERITIES = {"none", "low", "medium", "high", "critical"}
 
 
 def summarize_chunk(code: str) -> str:
-    """Return a short business-level summary of ``code``."""
+    """Return a short business-level summary of ``code``.
+
+    On API failure it returns a readable "Summary unavailable" string instead of
+    raising, so one bad chunk does not stop the whole audit.
+    """
     payload = {
         "model": GROQ_SUMMARY_MODEL,
         "messages": [
             {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-            {"role": "user", "content": f"```python\n{code}\n```"},
+            {"role": "user", "content": f"```python\n{code}\n```"},  # fenced so the model sees code
         ],
-        "max_tokens": 150,
+        "max_tokens": 150,  # 2–3 sentences fit comfortably in this
     }
     data = call_groq_with_retry(payload)
     if "choices" not in data:
@@ -56,7 +62,9 @@ def build_audit_prompt(
     policies: Sequence[str],
     classifier_hint: str = "",
 ) -> str:
+    """Assemble the user prompt for Kimi K2: code, summary, policies, optional hint, JSON format."""
     policy_text = "\n".join(f"- {p}" for p in policies)
+    # The hint is only added in hybrid mode, when the classifier has already scored the chunk.
     hint_block = f"\nPRE-CLASSIFICATION HINT (fine-tuned CodeBERT): {classifier_hint}\n" if classifier_hint else ""
     return (
         "You are a compliance auditor. Analyze the following code against the provided policies.\n\n"
@@ -79,17 +87,18 @@ def parse_llm_json(raw: str) -> dict[str, Any]:
     Falls back to a non-compliant result with the raw text if nothing parses,
     which is the same conservative behaviour as the notebook.
     """
-    clean = raw.replace("```json", "").replace("```", "").strip()
+    clean = raw.replace("```json", "").replace("```", "").strip()  # drop Markdown fences
     try:
         return json.loads(clean)
     except json.JSONDecodeError:
-        pass
+        pass  # not clean JSON: try to pull out the first {...} block below
     match = re.search(r"\{.*\}", clean, flags=re.DOTALL)
     if match:
         try:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             pass
+    # Nothing parsed. Fail closed (non-compliant) so a human reviews the chunk.
     return {"compliant": False, "violations": ["JSON parse error"], "explanation": raw, "severity": "unknown"}
 
 
@@ -100,17 +109,22 @@ def audit_chunk(
     policies: Sequence[str],
     classifier_hint: str = "",
 ) -> dict[str, Any]:
-    """Ask Kimi K2 for a structured compliance verdict on one chunk."""
+    """Ask Kimi K2 for a structured compliance verdict on one chunk.
+
+    Returns the parsed verdict dict, or a non-compliant "API error" dict if the
+    request failed.
+    """
     payload = {
         "model": GROQ_AUDIT_MODEL,
         "messages": [
             {"role": "system", "content": AUDIT_SYSTEM_PROMPT},
             {"role": "user", "content": build_audit_prompt(chunk_name, code, summary, policies, classifier_hint)},
         ],
-        "max_tokens": 500,
+        "max_tokens": 500,  # enough for the JSON verdict and explanation
     }
     data = call_groq_with_retry(payload)
     if "choices" not in data:
+        # Treated as a violation so an API outage is never reported as "compliant".
         return {
             "compliant": False,
             "violations": ["API error"],
