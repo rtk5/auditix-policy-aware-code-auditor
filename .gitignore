@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets — never commit real keys
+.env
+
+# Generated outputs / large artifacts
+audit_output/
+audit_results/
+*.faiss
+*.pt
+*.bin
+*.safetensors
+*.zip
+# Trained classifier checkpoints and cached datasets (kept out of Git).
+# Keep the folder itself via models/.gitkeep.
+models/*
+!models/.gitkeep
+ft_dataset.json
+clf_checkpoints/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
