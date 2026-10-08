@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _env_bool(name: str, default: bool) -> bool:
+    """Read a yes/no environment variable. Accepts 1/true/yes/on (any case)."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -24,11 +25,12 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def get_groq_api_key() -> str | None:
-    """Groq key. ``GROK_API_KEY`` is accepted because the notebooks used that name."""
+    """Return the Groq key. ``GROK_API_KEY`` is accepted because the notebooks used that name."""
     return os.getenv("GROQ_API_KEY") or os.getenv("GROK_API_KEY")
 
 
 def get_gemini_api_key() -> str | None:
+    """Return the Gemini key read from ``GEMINI_API_KEY`` (or None if unset)."""
     return os.getenv("GEMINI_API_KEY")
 
 
@@ -36,7 +38,7 @@ def get_gemini_api_key() -> str | None:
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_SUMMARY_MODEL = "llama-3.1-8b-instant"       # cheap summaries for retrieval
 GROQ_AUDIT_MODEL = "moonshotai/kimi-k2-instruct"  # deep compliance reasoning
-GROQ_TIMEOUT_SECONDS = 60
+GROQ_TIMEOUT_SECONDS = 60                         # give up on a single HTTP call after this
 
 GEMINI_EMBED_MODEL = "models/gemini-embedding-2-preview"  # 3072-dim vectors
 
@@ -67,11 +69,12 @@ class Settings:
     # When True (the notebook behaviour) the LLM always writes the explanation.
     explain_fast_path: bool = True
     use_classifier: bool = True
-    extra: dict = field(default_factory=dict)
+    extra: dict = field(default_factory=dict)  # spare slot for experiments, not used by the pipeline
 
     @classmethod
     def from_env(cls) -> "Settings":
-        base = cls()
+        """Build settings from defaults, then apply any ``AUDITIX_*`` environment overrides."""
+        base = cls()  # start from the defaults above
         return cls(
             policies_path=Path(os.getenv("AUDITIX_POLICIES_PATH", base.policies_path)),
             classifier_path=Path(os.getenv("AUDITIX_CLASSIFIER_PATH", base.classifier_path)),
@@ -97,11 +100,11 @@ def load_dotenv_file(path: str | Path | None = None) -> bool:
     for raw in env_path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
-            continue
+            continue  # skip blanks, comments and anything that is not KEY=VALUE
         key, _, value = line.partition("=")
         key = key.strip()
-        if key.startswith("export "):
+        if key.startswith("export "):  # allow "export KEY=VALUE" lines too
             key = key[len("export "):].strip()
-        value = value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+        value = value.strip().strip('"').strip("'")  # remove optional quotes
+        os.environ.setdefault(key, value)  # setdefault: never overwrite the shell
     return True
