@@ -28,9 +28,16 @@
 - [Training Data & Dataset Strategy](#-training-data--dataset-strategy)
 - [Audit Results](#-audit-results)
 - [Key Design Decisions](#-key-design-decisions)
+- [Documentation](#-documentation)
 - [Setup & Installation](#-setup--installation)
+- [Configuration](#-configuration)
 - [Usage](#-usage)
+- [Training the Classifier](#-training-the-classifier)
+- [Testing](#-testing)
 - [Project Structure](#-project-structure)
+- [Troubleshooting](#-troubleshooting)
+- [Known Limitations](#-known-limitations)
+- [Contributing](#-contributing)
 
 ---
 
@@ -70,7 +77,7 @@ A **hybrid AI system** that automatically audits code against business policies 
 | **Code Parsing** | Python `ast` — Abstract Syntax Tree chunking |
 | **Fine-Tuning** | HuggingFace `transformers` + `PEFT` + `LoRA` |
 | **Reports** | ReportLab PDF · JSON |
-| **Runtime** | Google Colab (T4 GPU recommended) |
+| **Runtime** | Python 3.10+ · any machine for auditing · CUDA GPU (T4 recommended) for training |
 
 ---
 
@@ -233,13 +240,13 @@ HIGH CONFIDENCE             HIGH CONFIDENCE
 - **35–65%:** Full Kimi K2 reasoning is triggered. The classifier hint is passed as context.
 - **<35%:** CodeBERT verdict is trusted. LLM confirms and explains the clean code.
 
-This routing saves approximately **60% of expensive LLM calls**.
+The routing reduces expensive LLM work. Whether it saves LLM *calls* depends on the mode: with `AUDITIX_EXPLAIN_FAST_PATH=0` only ambiguous chunks reach Kimi K2 (the saving has not been measured on this project's data; see [explanation.md §6.4](explanation.md#64-cost-control)).
 
 ---
 
 ## 🤖 Fine-Tuning CodeBERT with LoRA
 
-**Module:** `fineTuned_model.ipynb`
+**Module:** `src/auditix/training/` (originally `notebooks/legacy/fineTuned_model.ipynb`)
 
 ### CodeBERT Architecture
 
@@ -257,7 +264,7 @@ This routing saves approximately **60% of expensive LLM calls**.
 | `lora_alpha` | 32 | Standard 2×r for stable gradients |
 | `lora_targets` | Q, K | Query + Key attention matrices |
 | `lr` | 2e-4 | LoRA standard; lower = no overfit |
-| `epochs` | 5 | Converges on ~1000 real samples |
+| `epochs` | 5 | Converges on the ~6,900-sample balanced dataset |
 | `scheduler` | cosine | Smooth decay vs linear |
 | `fp16` | True | Half-precision on T4 GPU |
 | `effective_batch` | 32 | 16 × grad_accum of 2 |
@@ -270,12 +277,13 @@ This routing saves approximately **60% of expensive LLM calls**.
 
 | Dataset | Source | Type | Usage |
 |---------|--------|------|-------|
-| **SecureCode-v2** | `scthornton/securecode-v2` | Security | Python samples labeled secure/vulnerable → mapped to policy violations |
-| **CodeSearchNet** | `code_search_net` | General | Large-scale NL+code pairs → labeled by keyword-policy mapping |
-| **BigCode / The Stack** | `bigcode/the-stack` | Scale | Massive Python codebase → chunked and policy-assigned via keyword matching |
-| **Vuln Detection** | HuggingFace vulnerability datasets | Security | Vulnerability-labeled code → `violation=1` for security-failing functions |
+| **SecureCode-v2** | `scthornton/securecode-v2` | Security | Assistant code turns; `category == "secure"` → compliant, otherwise violation |
+| **CodeXGLUE defect (Devign)** | `code_x_glue_cc_defect_detection` | Defects | `target` 1 (defective) → violation, 0 → compliant |
+| **CodeParrot GitHub Code** | `codeparrot/github-code` (streamed) | Clean code | Python files with a `def` → compliant baseline |
 
-**Policy assignment strategy:** Keyword overlap with no API calls required.
+Not used in the final code, despite earlier notes: CodeSearchNet, CVEFixes and BigVul (BigVul failed to load and was skipped; `bigcode/the-stack-smol` returned HTTP 403).
+
+**Policy assignment strategy:** Keyword overlap with no API calls required. The labels are weak (not human-verified). Duplicates are removed across all sources before the 80/10/10 split. See [explanation.md §7](explanation.md#7-the-fine-tuning-pipeline-codebert--lora).
 
 ```
 payment  → AuditLogger policy
@@ -319,7 +327,7 @@ Live run on a real e-commerce Django codebase:
 Python's `ast` module extracts semantically complete functions and classes — not arbitrary line blocks. Each chunk has one clear purpose, making it a meaningful unit for policy evaluation.
 
 ### 02 — Hybrid Routing = Cost Control
-High-confidence cases (>65% or <35%) bypass deep LLM reasoning. Only ambiguous cases get full Kimi K2 treatment — saving ~60% of LLM calls at the cost of zero accuracy degradation on clear-cut cases.
+High-confidence cases (>65% or <35%) bypass deep LLM reasoning. Only ambiguous cases get a full Kimi K2 verdict. On clear-cut cases the classifier's verdict is used, and the LLM only writes an explanation (or is skipped entirely with `AUDITIX_EXPLAIN_FAST_PATH=0`). The accuracy cost on clear-cut cases has not been measured; the classifier's violation recall on its own test set was 0.65.
 
 ### 03 — FAISS Before CodeBERT
 Running CodeBERT on all 12 policies = 12 inference passes per chunk. FAISS narrows to top-3 first → reduces classifier calls by **75%**.
@@ -331,7 +339,18 @@ Running CodeBERT on all 12 policies = 12 inference passes per chunk. FAISS narro
 If CodeBERT fails to load, the pipeline degrades to LLM-only mode automatically — same output schema, just without classifier confidence scores. The system always produces a result.
 
 ### 06 — LoRA for Efficiency
-LoRA fine-tunes only the query+key attention matrices (not all weights). ~16M parameters added — full fine-tuning would require 10× more compute and would be infeasible on a T4 GPU.
+LoRA fine-tunes only the query+key attention matrices (not all weights). It trains 1.18M parameters (0.94% of the 125.8M model), which keeps memory and compute low enough for a single T4 GPU.
+
+---
+
+## 📚 Documentation
+
+| Document | What it covers |
+|----------|----------------|
+| [**explanation.md**](explanation.md) | Whole-project explanation: architecture, module layout, the 8 pipeline stages with data shapes, the hybrid routing, the fine-tuning pipeline, configuration, results, and a detailed comparison with real HDFS |
+| [**details.md**](details.md) | File-by-file code walkthrough, plus an interview guide: concepts to know, numbers to memorise, likely questions with answers, a demo script, and a knowledge checklist |
+| [`policies/policies.txt`](policies/policies.txt) | The compliance policies the auditor enforces |
+| [`notebooks/legacy/`](notebooks/legacy) | The original Colab notebooks, kept for reference (not used by the package) |
 
 ---
 
@@ -339,175 +358,383 @@ LoRA fine-tunes only the query+key attention matrices (not all weights). ~16M pa
 
 ### Prerequisites
 
-- Python 3.10+
-- A GPU runtime (Google Colab T4 recommended, or local CUDA GPU)
-- API keys for:
-  - [Groq](https://console.groq.com/) (for LLaMA 3.1 8B and Kimi K2)
-  - [Google AI Studio](https://aistudio.google.com/) (for Gemini Embeddings)
+- **Python 3.10+** (the project was developed on Python 3.11 and the notebooks ran on Colab's Python 3.12)
+- **Git** on your `PATH` (needed for `auditix audit-repo`)
+- **API keys**:
+  - [Groq](https://console.groq.com/) — LLaMA 3.1 8B (summaries) and Kimi K2 (audit reasoning)
+  - [Google AI Studio](https://aistudio.google.com/) — Gemini embeddings (policy retrieval)
+  - [Hugging Face](https://huggingface.co/settings/tokens) — *optional* read token, only for training
+- **GPU (optional)** — only needed for fine-tuning. Auditing runs on a CPU; a T4 GPU is recommended for training
 
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/rtk5/policy-aware-auditor.git
-cd policy-aware-auditor
-```
-
-### 2. Install Dependencies
+### 1. Clone the repository
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/rtk5/auditix-policy-aware-code-auditor.git
+cd auditix-policy-aware-code-auditor
 ```
 
-Or manually:
+The `code-sample/` folder is a git submodule placeholder for the sample repository used in the live run. You do not need it to use the auditor. To fetch it (if you have access):
 
 ```bash
-pip install transformers peft faiss-cpu groq google-generativeai \
-            reportlab gitpython torch accelerate bitsandbytes \
-            huggingface_hub datasets
+git submodule update --init
 ```
 
-### 3. Set API Keys
+### 2. Create a virtual environment
+
+```bash
+python -m venv .venv
+
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+```
+
+### 3. Install the dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt        # the audit pipeline
+pip install -e .                       # installs the `auditix` command (recommended)
+```
+
+`requirements.txt` covers everything needed to audit code: `requests`, `numpy`
+(< 2), `faiss-cpu`, `google-genai`, `reportlab` and `pypdf`.
+
+If you do not run `pip install -e .`, use `python -m auditix` instead of
+`auditix`, from the project root.
+
+Optional extras:
+
+```bash
+pip install -r requirements-dev.txt    # pytest, to run the test suite
+pip install -r requirements-train.txt  # torch, transformers, peft, ... to fine-tune CodeBERT
+```
+
+### 4. Set your API keys
+
+Copy the template and fill it in:
+
+```bash
+cp .env.example .env
+# then edit .env and set GROQ_API_KEY and GEMINI_API_KEY
+```
+
+`auditix` reads `.env` from the project root automatically. Values already set
+in your shell take precedence over the file.
+
+You can also export the variables directly:
 
 ```bash
 export GROQ_API_KEY="your_groq_api_key"
 export GEMINI_API_KEY="your_gemini_api_key"
 ```
 
-Or in a Colab notebook:
+On Windows PowerShell: `$env:GROQ_API_KEY = "your_groq_api_key"`.
 
-```python
-import os
-os.environ["GROQ_API_KEY"] = "your_groq_api_key"
-os.environ["GEMINI_API_KEY"] = "your_gemini_api_key"
+> ⚠️ Never commit `.env` or paste keys into code. `.gitignore` already excludes `.env`.
+
+### 5. Verify the installation
+
+```bash
+auditix --help
+python -m pytest -q        # needs requirements-dev.txt; the tests need no keys and no network
 ```
 
-### 4. (Optional) Fine-Tune CodeBERT
+### 6. Build the FAISS policy index
 
-If you want to run your own fine-tuning instead of using the pre-trained checkpoint:
+The index is built automatically on the first audit. To build it ahead of time:
 
-1. Open `fineTuned_model.ipynb` in Google Colab (T4 GPU runtime)
-2. Run all cells to:
-   - Load training datasets from HuggingFace
-   - Apply LoRA configuration
-   - Fine-tune for 5 epochs
-   - Save the model checkpoint
-
-### 5. Build the FAISS Policy Index
-
-The FAISS index is built automatically on first run from the policy definitions. If you want to pre-build it:
-
-```python
-from pipeline import build_policy_index
-build_policy_index()  # Embeds all 12 policies via Gemini → saves FAISS index to disk
+```bash
+auditix build-index
+# Indexed 12 policies into models/policy_index
 ```
+
+This embeds the 12 policies with Gemini and writes `models/policy_index/`. It is rebuilt
+automatically whenever `policies/policies.txt` changes.
+
+### 7. (Optional) Get the fine-tuned classifier
+
+The classifier is optional. Without it the auditor runs in **LLM-only** mode.
+You have two options:
+
+- **Train your own** (needs a GPU and `requirements-train.txt`): see [Training the Classifier](#-training-the-classifier).
+- **Use a checkpoint you already have** (for example, the folder saved by the Colab notebook): copy it to `models/policy_classifier/`, or point to it with `AUDITIX_CLASSIFIER_PATH` / `--classifier`.
+
+The classifier folder holds a LoRA adapter, so loading it also downloads the base
+model `microsoft/codebert-base` from Hugging Face the first time.
+
+---
+
+## ⚙️ Configuration
+
+Settings are in `src/auditix/config.py` and can be overridden by environment
+variables or command-line flags. Command-line flags win over environment
+variables, which win over defaults.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GROQ_API_KEY` | — | Groq API key (`GROK_API_KEY` is accepted as an alias) |
+| `GEMINI_API_KEY` | — | Gemini embedding key |
+| `HF_TOKEN` | — | Hugging Face token, used by training |
+| `AUDITIX_CLASSIFIER_PATH` | `models/policy_classifier` | Classifier folder (`--classifier`) |
+| `AUDITIX_INDEX_DIR` | `models/policy_index` | FAISS index folder |
+| `AUDITIX_POLICIES_PATH` | `policies/policies.txt` | Policy file (`--policies`) |
+| `AUDITIX_OUTPUT_DIR` | `audit_output` | Report folder (`-o`) |
+| `AUDITIX_EXPLAIN_FAST_PATH` | `1` | `0` skips the LLM on confident chunks (`--no-explain-fast-path`) |
+| `AUDITIX_USE_CLASSIFIER` | `1` | `0` forces LLM-only mode (`--no-classifier`) |
+
+Model names, thresholds (`0.35` / `0.65`) and the number of retrieved policies
+(`3`) are constants in `config.py`.
 
 ---
 
 ## 🖥️ Usage
 
-### Run the Full Audit Pipeline
+### Audit a local folder
 
-```python
-from auditor import run_audit
-
-results = run_audit(
-    repo_url="https://github.com/target-org/target-repo",
-    output_dir="./audit_output"
-)
+```bash
+auditix audit-local path/to/your/project -o audit_output
 ```
 
-This will:
-1. Clone the repo and extract all `.py` files
-2. Parse functions/classes via AST chunking
-3. Generate LLaMA summaries for each chunk
-4. Retrieve top-3 relevant policies via FAISS
-5. Run CodeBERT classifier
-6. Route through the hybrid decision engine
-7. Call Kimi K2 for ambiguous cases
-8. Generate `audit_report.pdf` and `audit_results.json` in `output_dir`
+### Audit a GitHub repository
 
-### Run on a Local Directory
-
-```python
-from auditor import run_audit_local
-
-results = run_audit_local(
-    code_dir="/path/to/your/project",
-    output_dir="./audit_output"
-)
+```bash
+auditix audit-repo https://github.com/org/repo -o audit_output
 ```
 
-### Run via Notebook
+The repository is shallow-cloned into a temporary folder, audited, and then deleted.
 
-Open `complete_code.ipynb` and follow the cells in order. Each section is clearly labeled and can be run independently.
+### Useful flags
 
-### Output Format
+```bash
+auditix audit-local ./project --no-classifier          # LLM-only mode
+auditix audit-local ./project --no-explain-fast-path   # fewer LLM calls (template explanations)
+auditix audit-local ./project --policies my_policies.pdf
+auditix audit-local ./project --pause 2                # slower, gentler on rate limits
+auditix -v audit-local ./project                       # debug logging
+```
+
+A run prints a summary like this:
+
+```
+============================================================
+FULL AUDIT COMPLETE
+============================================================
+  Mode             : hybrid
+  Files audited    : 9
+  Chunks analyzed  : 337
+  Total violations : 24
+  Critical issues  : 0
+  Compliance rate  : 93%
+  Output folder    : audit_output
+============================================================
+```
+
+It writes two files to the output folder:
+
+- `audit_results.json` — the full verdict for every chunk
+- `audit_report.pdf` — a readable report grouped by file
+
+### Use it from Python
+
+```python
+from auditix.pipeline import build_context, run_audit_local
+
+ctx = build_context()                         # reads .env and the environment
+results = run_audit_local("path/to/project", output_dir="audit_output", ctx=ctx)
+print(results["summary"])
+```
+
+To run without any API calls, inject fakes (this is how the tests work):
+
+```python
+from auditix.pipeline import build_context, audit_directory
+
+ctx = build_context(embedder=my_embedder, classifier=None)  # LLM-only, custom embedder
+ctx.llm_audit = my_llm_function                             # any callable with the same signature
+results = audit_directory("path/to/project", ctx)
+```
+
+### Output format
 
 Each code chunk produces a verdict in this schema:
 
 ```json
 {
-  "chunk_name": "process_payment",
-  "file": "payment/utils.py",
+  "name": "process_payment",
+  "type": "FunctionDef",
   "compliant": false,
   "violations": [
     "Missing AuditLogger on transaction",
     "Direct DB update to order status"
   ],
-  "explanation": "This function updates order status directly via ORM without going through PaymentService and without any AuditLogger call, violating both the payment logging and architecture policies.",
-  "severity": "HIGH",
-  "classifier_confidence": 0.87,
+  "explanation": "Classifier p(violation)=91.0%. This function updates order status directly via ORM without going through PaymentService and without any AuditLogger call, violating both the payment logging and architecture policies.",
+  "severity": "critical",
+  "classifier_confidence": 0.91,
+  "policies_checked": ["..."],
+  "summary": "...",
   "decision_path": "[Hybrid/high-confidence→LLM-explain]"
 }
 ```
+
+`decision_path` is one of:
+
+| Value | Meaning |
+|-------|---------|
+| `[Hybrid/high-confidence→LLM-explain]` | Classifier was confident; the verdict is the classifier's |
+| `[Hybrid/ambiguous→full-LLM]` | Probability in the 35–65% band; Kimi K2 decided |
+| `[LLM-only]` | No classifier loaded; Kimi K2 decided |
+
+### Run the original notebook (legacy)
+
+The notebooks were the first version of the pipeline. They are kept in
+`notebooks/legacy/` for reference. New work should use the package.
+
+---
+
+## 🎓 Training the Classifier
+
+```bash
+pip install -r requirements-train.txt
+auditix train --epochs 5
+```
+
+Useful options:
+
+```bash
+auditix train --output-dir models/policy_classifier   # where the adapter is saved
+auditix train --cache models/ft_dataset.json          # dataset cache file
+auditix train --max-per-source 1000                   # smaller run, for a quick check
+auditix train --rebuild-dataset                       # ignore the cache and reload the datasets
+```
+
+What the command does:
+
+1. Loads the three public datasets (see [Training Data & Dataset Strategy](#-training-data--dataset-strategy)) and writes them to a cache.
+2. Removes duplicate code across all sources, balances the classes 50/50, and splits 80/10/10.
+3. Fine-tunes `microsoft/codebert-base` with a LoRA adapter (r=16, alpha=32, query and key projections).
+4. Evaluates on the held-out test split and writes `metrics.json`.
+5. Saves the adapter, tokenizer, `training_config.json`, `metrics.json` and `training_curves.png` to `models/policy_classifier/`.
+
+The output folder is git-ignored, so the trained weights are not committed. Share them through
+Hugging Face Hub or a release asset.
+
+---
+
+## 🧪 Testing
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+There are 52 tests. They cover policy parsing, AST chunking, retry logic,
+hybrid routing (every threshold boundary), the FAISS index with a fake embedder,
+report generation, the training-data logic, and the CLI. None of them needs an
+API key, a GPU or network access. A full run takes about one second.
 
 ---
 
 ## 📁 Project Structure
 
 ```
-policy-aware-auditor/
+auditix-policy-aware-code-auditor/
 │
-├── complete_code.ipynb         # Main pipeline notebook (Rithvik)
-├── fineTuned_model.ipynb       # CodeBERT fine-tuning notebook (Rohan)
+├── README.md                    # this file
+├── explanation.md               # architecture and pipeline (read this first)
+├── details.md                   # code walkthrough and interview guide
+├── requirements.txt             # runtime dependencies
+├── requirements-train.txt       # fine-tuning dependencies (torch, transformers, peft, ...)
+├── requirements-dev.txt         # pytest
+├── pyproject.toml               # package metadata and the `auditix` command
+├── .env.example                 # API key template (copy to .env)
+├── .gitignore
 │
 ├── policies/
-│   └── policies.txt            # 12 business policies (5 domains)
+│   └── policies.txt             # 12 compliance policies, one per line
 │
-├── src/
-│   ├── chunker.py              # AST-based code chunking
-│   ├── embedder.py             # Gemini embedding wrapper
-│   ├── faiss_index.py          # FAISS index build + retrieval
-│   ├── classifier.py           # Fine-tuned CodeBERT inference
-│   ├── summarizer.py           # LLaMA 3.1 8B via Groq
-│   ├── auditor.py              # Kimi K2 via Groq — deep audit
-│   ├── hybrid_engine.py        # Routing logic (fast-path vs full-LLM)
-│   ├── retry.py                # call_groq_with_retry() with smart backoff
-│   ├── report_generator.py     # ReportLab PDF + JSON output
-│   └── pipeline.py             # End-to-end orchestration
+├── src/auditix/                 # the Python package
+│   ├── cli.py                   # auditix audit-local | audit-repo | build-index | train
+│   ├── config.py                # constants, settings, .env loader
+│   ├── pipeline.py              # end-to-end orchestration
+│   ├── chunker.py               # AST chunking of Python files
+│   ├── policies.py              # policy loading (.txt / .md / .pdf)
+│   ├── embeddings.py            # Gemini embeddings (document / query)
+│   ├── policy_index.py          # FAISS index build / cache / search
+│   ├── classifier.py            # CodeBERT + LoRA inference
+│   ├── hybrid_engine.py         # routing rules and verdict merging
+│   ├── reporting.py             # JSON and PDF output
+│   ├── llm/
+│   │   ├── retry.py             # Groq calls with rate-limit retries
+│   │   └── groq_client.py       # summary and audit prompts, JSON parsing
+│   └── training/
+│       ├── config.py            # training hyperparameters
+│       ├── datasets.py          # dataset loading, dedupe, balance, split
+│       └── train.py             # LoRA fine-tuning and test evaluation
 │
-├── models/
-│   └── codebert-lora/          # LoRA fine-tuned checkpoint (after training)
+├── tests/                       # 52 offline unit tests
 │
-├── requirements.txt
-└── README.md
+├── notebooks/
+│   └── legacy/                  # original Colab notebooks (reference only)
+│
+├── models/                      # generated artifacts (git-ignored, except .gitkeep)
+│   └── .gitkeep
+│
+├── audit_report.pdf, paper.pdf, compliance_auditor_ppt.pdf   # project documents
+├── code links.txt               # reference links
+└── code-sample/                 # submodule placeholder for the sample audit target
 ```
 
 ---
 
-## ⚠️ Notes & Limitations
+## 🩺 Troubleshooting
 
-- **API costs:** Kimi K2 is only called for the ambiguous zone (35–65% confidence) to minimize cost. LLaMA 3.1 8B is used for all summaries as it is fast and cheap on Groq.
-- **Rate limits:** The `call_groq_with_retry()` function handles Groq rate limits automatically by parsing exact wait times from error responses.
-- **GPU required for fine-tuning:** The LoRA fine-tuning step (`fineTuned_model.ipynb`) requires a GPU. Google Colab T4 is sufficient. Inference-only mode can run on CPU.
-- **Graceful degradation:** If the CodeBERT checkpoint is unavailable, the pipeline automatically falls back to LLM-only mode with the same output schema.
-- **FAISS is CPU-only:** The system uses `faiss-cpu`. For very large policy sets (100+), consider `faiss-gpu`.
+| Symptom | Cause and fix |
+|---------|---------------|
+| `error: GEMINI_API_KEY is not set` | Add the key to `.env` or export it. Check you are in the project root, since `.env` is read from there |
+| Groq returns `invalid_api_key` | The key is wrong or expired. Create a new one in the Groq console |
+| `Classifier folder not found … running LLM-only` | Expected if you have not trained or copied a classifier. Not an error |
+| `Could not load classifier (…) — running LLM-only` | Usually a `transformers` version mismatch, or no internet access to download `microsoft/codebert-base`. Install `requirements-train.txt`, which pins the versions the adapter was trained with |
+| `ModuleNotFoundError: No module named 'auditix'` | Run `pip install -e .`, or run from the project root with `PYTHONPATH=src` |
+| `faiss` fails to install on your platform | Use Python 3.10–3.12 with a recent `pip`. `faiss-cpu` ships wheels for Linux, macOS and Windows on those versions |
+| `audit-repo` fails with a git error | Check `git --version`. Private repositories need credentials configured for git |
+| Many `Rate limit — waiting …` messages | Normal. Retries wait the time Groq asks for. Use `--pause 2` to slow down |
+| The PDF shows boxes instead of ✔ ✘ ⚠ | ReportLab's default font has no such glyphs. The text is still correct. Register a Unicode TTF font to fix it |
+| PowerShell ignores `export` | Use `$env:GROQ_API_KEY = "..."` or put the keys in `.env` |
+
+---
+
+## ⚠️ Known Limitations
+
+- **Weak labels.** The classifier's training labels come from keyword rules and from security and defect datasets, not from human review. Its 0.81 macro-F1 measures how well it learned those labels.
+- **Low violation recall.** On its own test set the classifier caught 65% of violations (precision 0.95). The ambiguous band and the LLM help, but real misses remain.
+- **Unmeasured savings.** The "fewer LLM calls" benefit depends on the mode and on the share of ambiguous chunks, which has not been measured.
+- **Single machine.** The auditor is a batch tool, not a distributed system. See [explanation.md §10](explanation.md#10-comparison-with-real-hdfs) for what scaling would require.
+- **LLM output is advisory.** Verdicts are judgments with evidence, not legal findings. Review violations before acting on them.
+- **Long functions are truncated.** The classifier sees at most 512 tokens.
+
+The full list, with the corrections made to the original notebooks and README, is in [explanation.md §11](explanation.md#11-limitations-and-honest-notes).
+
+---
+
+## 🧠 Contributing
+
+1. Create a branch and make your change.
+2. Run `python -m pytest -q`. Add a test for any new routing rule or parser.
+3. Keep keys, outputs and model weights out of Git. `.gitignore` covers the usual paths.
+4. Open a pull request with a short description of what changed and why.
+
+Please keep `explanation.md` and `details.md` in step with the code. If you
+change the routing thresholds, the prompts, or the training settings, update the
+tables there too.
 
 ---
 
 ## 📜 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License. The `LICENSE` file is not yet present in this repository, so add one (for example from [choosealicense.com](https://choosealicense.com/licenses/mit/)) before publishing.
 
 ---
 
