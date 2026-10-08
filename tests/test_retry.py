@@ -12,10 +12,12 @@ from auditix.llm.retry import call_groq_with_retry, parse_wait_seconds
         ("no hint here", 11.0),  # default 10s + 1s padding
     ],
 )
+# The wait is read from the message (seconds or milliseconds), plus 1s padding.
 def test_parse_wait_seconds(message, expected):
     assert parse_wait_seconds(message) == pytest.approx(expected)
 
 
+# Minimal stand-in for requests.Response with the parts the helper uses.
 class FakeResponse:
     def __init__(self, payload, status=200):
         self._payload = payload
@@ -25,6 +27,7 @@ class FakeResponse:
         return self._payload
 
 
+# A successful reply returns at once, with no sleep.
 def test_success_returns_immediately(monkeypatch):
     calls = []
     monkeypatch.setattr(retry.requests, "post", lambda *a, **k: calls.append(1) or FakeResponse({"choices": [1]}))
@@ -34,6 +37,7 @@ def test_success_returns_immediately(monkeypatch):
     assert len(calls) == 1 and sleeps == []
 
 
+# A rate-limit reply sleeps for the advertised time, then retries.
 def test_rate_limit_waits_then_succeeds(monkeypatch):
     responses = iter([
         FakeResponse({"error": {"code": "rate_limit_exceeded", "message": "try again in 1.2s."}}),
@@ -46,6 +50,7 @@ def test_rate_limit_waits_then_succeeds(monkeypatch):
     assert sleeps == [pytest.approx(2.2)]
 
 
+# Other errors are returned at once, since retrying cannot fix them.
 def test_non_rate_limit_error_is_not_retried(monkeypatch):
     monkeypatch.setattr(retry.requests, "post",
                         lambda *a, **k: FakeResponse({"error": {"code": "invalid_api_key", "message": "bad"}}))
@@ -55,6 +60,7 @@ def test_non_rate_limit_error_is_not_retried(monkeypatch):
     assert sleeps == []
 
 
+# With no API key the helper fails before any network call.
 def test_missing_key_returns_error_without_calling_api(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GROK_API_KEY", raising=False)
