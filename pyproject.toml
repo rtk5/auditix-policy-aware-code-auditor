@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auditix"
+version = "0.2.0"
+description = "Policy-aware code compliance auditor: AST chunking, FAISS policy retrieval, fine-tuned CodeBERT and LLM reasoning."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+train = []  # see requirements-train.txt
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+auditix = "auditix.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
