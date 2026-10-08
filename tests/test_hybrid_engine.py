@@ -11,6 +11,7 @@ from auditix.hybrid_engine import (
 POLICIES = ["policy A", "policy B", "policy C"]
 
 
+# Stub classifier returning fixed per-policy probabilities, so routing is predictable.
 class FakeClassifier:
     """Returns a fixed probability per policy and records the calls."""
 
@@ -23,6 +24,7 @@ class FakeClassifier:
         return self.probs[policy]
 
 
+# Stub LLM that records each call and returns a canned verdict.
 class FakeLLM:
     def __init__(self, verdict=None):
         self.verdict = verdict or {
@@ -50,10 +52,12 @@ class FakeLLM:
         ([0.65, 0.05, 0.05], ROUTE_AMBIGUOUS),                  # boundary 0.65 is ambiguous
     ],
 )
+# Each probability pattern goes to the expected route, including both threshold boundaries.
 def test_route_probabilities(probs, route):
     assert route_probabilities(probs).route == route
 
 
+# With no policies there is nothing to flag.
 def test_route_with_no_policies_is_compliant():
     routing = route_probabilities([])
     assert routing.is_violation is False and routing.max_probability == 0.0
@@ -63,12 +67,14 @@ def test_route_with_no_policies_is_compliant():
     "p, severity",
     [(0.97, "critical"), (0.85, "high"), (0.70, "medium"), (0.50, "low"), (0.10, "none")],
 )
+# Each probability range maps to its severity label.
 def test_severity_bands(p, severity):
     assert severity_from_probability(p) == severity
 
 
 # ── Engine behaviour ─────────────────────────────────────────────────────────
 
+# On the fast path the classifier decides, even when the LLM disagrees.
 def test_fast_path_violation_trusts_classifier_even_if_llm_disagrees():
     llm = FakeLLM({"compliant": True, "violations": [], "explanation": "LLM thinks it is fine", "severity": "none"})
     result = audit_chunk_hybrid(
@@ -85,6 +91,7 @@ def test_fast_path_violation_trusts_classifier_even_if_llm_disagrees():
     assert result["violations"] == ["Violates policy: policy A"]
 
 
+# A confidently clean chunk has no violations and severity 'none'.
 def test_fast_path_compliant_skips_violations_list():
     llm = FakeLLM()
     result = audit_chunk_hybrid(
@@ -96,6 +103,7 @@ def test_fast_path_compliant_skips_violations_list():
     assert result["severity"] == "none"
 
 
+# In the uncertain band the LLM verdict is used.
 def test_ambiguous_case_lets_llm_decide():
     llm = FakeLLM({"compliant": True, "violations": [], "explanation": "fine after review", "severity": "none"})
     result = audit_chunk_hybrid(
@@ -107,6 +115,7 @@ def test_ambiguous_case_lets_llm_decide():
     assert "decide the verdict yourself" in llm.calls[0]["hint"]
 
 
+# With explain_fast_path=False a confident chunk makes no LLM call.
 def test_explain_fast_path_disabled_skips_llm():
     llm = FakeLLM()
     result = audit_chunk_hybrid(
@@ -119,6 +128,7 @@ def test_explain_fast_path_disabled_skips_llm():
     assert "Violates policy: policy A" in result["violations"][0]
 
 
+# Without a classifier the LLM decides alone.
 def test_llm_only_mode_without_classifier():
     llm = FakeLLM({"compliant": True, "violations": [], "explanation": "ok", "severity": "none"})
     result = audit_chunk_hybrid("f", "code", "summary", POLICIES, classifier=None, llm_audit=llm)
@@ -127,6 +137,7 @@ def test_llm_only_mode_without_classifier():
     assert llm.calls[0]["hint"] == ""
 
 
+# A severity outside the allowed set becomes 'unknown'.
 def test_invalid_severity_is_normalised():
     llm = FakeLLM({"compliant": False, "violations": ["x"], "explanation": "e", "severity": "EXTREME"})
     result = audit_chunk_hybrid("f", "code", "summary", POLICIES, classifier=None, llm_audit=llm)
