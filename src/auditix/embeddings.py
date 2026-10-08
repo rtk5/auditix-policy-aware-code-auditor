@@ -20,9 +20,10 @@ class GeminiEmbedder:
     def __init__(self, api_key: str | None = None, model: str = GEMINI_EMBED_MODEL):
         self._api_key = api_key or get_gemini_api_key()
         self._model = model
-        self._client = None
+        self._client = None  # created on first use, so construction is cheap and offline
 
     def _get_client(self):
+        """Create the Gemini client once, on first use."""
         if self._client is None:
             if not self._api_key:
                 raise RuntimeError("GEMINI_API_KEY is not set (needed for policy embeddings)")
@@ -32,6 +33,7 @@ class GeminiEmbedder:
         return self._client
 
     def _embed(self, text: str, task_type: str) -> list[float]:
+        """Embed one string with the given Gemini task type and return its vector."""
         from google.genai import types
 
         response = self._get_client().models.embed_content(
@@ -43,10 +45,11 @@ class GeminiEmbedder:
 
     def embed_documents(self, texts: Sequence[str]) -> np.ndarray:
         """Embed policies (or other documents). Shape: (n, dim), float32."""
+        # One API call per text. Simple and matches the notebook; batching would be faster.
         vectors = [self._embed(t, "RETRIEVAL_DOCUMENT") for t in texts]
         return np.asarray(vectors, dtype="float32")
 
     def embed_query(self, text: str) -> np.ndarray:
         """Embed one query. Shape: (1, dim), float32."""
         vector = self._embed(text, "RETRIEVAL_QUERY")
-        return np.asarray(vector, dtype="float32").reshape(1, -1)
+        return np.asarray(vector, dtype="float32").reshape(1, -1)  # FAISS expects a 2-D batch
