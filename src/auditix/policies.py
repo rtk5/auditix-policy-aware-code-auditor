@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-MIN_POLICY_CHARS = 20
+MIN_POLICY_CHARS = 20  # shorter lines are headings or fragments, not policies
 
 
 def parse_policy_text(text: str) -> list[str]:
@@ -27,13 +27,14 @@ def parse_policy_text(text: str) -> list[str]:
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if len(line) < MIN_POLICY_CHARS or line.startswith("#"):
-            continue
-        line = re.sub(r"^\d+[.)\s]+", "", line)   # "1. " or "1) "
-        line = re.sub(r"^[-•*>]+\s*", "", line)    # bullets
+            continue  # too short, or a comment/heading line
+        line = re.sub(r"^\d+[.)\s]+", "", line)   # strip "1. " or "1) " numbering
+        line = re.sub(r"^[-•*>]+\s*", "", line)    # strip bullet characters
         line = line.strip()
-        if len(line) > MIN_POLICY_CHARS:
+        if len(line) > MIN_POLICY_CHARS:  # re-check: stripping may leave too little
             policies.append(line)
 
+    # Case-insensitive de-duplication that keeps the original order.
     seen: set[str] = set()
     unique: list[str] = []
     for policy in policies:
@@ -45,7 +46,11 @@ def parse_policy_text(text: str) -> list[str]:
 
 
 def load_policies(path: str | Path) -> list[str]:
-    """Load policies from ``.txt``, ``.md`` or ``.pdf`` files."""
+    """Load policies from ``.txt``, ``.md`` or ``.pdf`` files.
+
+    Raises FileNotFoundError if the file is missing and ValueError if it has no
+    usable policy lines.
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Policy file not found: {path}")
@@ -56,9 +61,9 @@ def load_policies(path: str | Path) -> list[str]:
         except ImportError as exc:  # pragma: no cover - depends on env
             raise ImportError("Reading PDF policies requires `pip install pypdf`") from exc
         reader = PdfReader(str(path))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)  # pages may be empty
     else:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        text = path.read_text(encoding="utf-8", errors="ignore")  # ignore odd bytes instead of failing
 
     policies = parse_policy_text(text)
     if not policies:
