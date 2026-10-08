@@ -337,6 +337,8 @@ Per chunk, the classifier produces three probabilities, one per retrieved policy
 
 The thresholds are in `config.py`: `AMBIGUITY_LOW = 0.35` and `AMBIGUITY_HIGH = 0.65`.
 
+Both fast-path routes write the same `decision_path` label, `[Hybrid/high-confidence→LLM-explain]`, because the code uses one constant for both (`ROUTE_VIOLATION` and `ROUTE_COMPLIANT`). The `compliant` field is what tells a violation from a compliant verdict. Changing the label is a code change and has not been made.
+
 ### 6.2 Severity bands
 
 For a fast-path violation, severity comes from the highest probability:
@@ -581,7 +583,7 @@ the classifier as parameters.
 | Item | What the notebooks or README said | What the code does / what is true |
 |---|---|---|
 | LoRA size | "~16M parameters added" (README) | 1.18M trainable parameters, 0.94% of the model (notebook output). README corrected |
-| LLM savings | "saves ~60% of LLM calls" (README) | Not measured. In the default mode the LLM still runs on every chunk to write the explanation. See §6.4 |
+| LLM savings | "saves ~60% of LLM calls" (an earlier README draft) | Not measured. In the default mode the LLM still runs on every chunk to write the explanation. See §6.4 |
 | Who decides on the fast path | README: classifier is trusted; notebook: LLM could override | Classifier decides now (§6.3). This changes the verdict in some cases compared with the notebook |
 | Deduplication | Per-loader only, so duplicates could leak between train and test | Global dedupe before the split (§7.4). Results will differ from the notebook's 0.817 |
 | Random policy fallback | `hash(text)` | `sha1`, so labels are reproducible across runs |
