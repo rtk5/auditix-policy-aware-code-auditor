@@ -189,7 +189,7 @@ The system enforces **12 policies across 5 domains**:
 1. **Index time:** All 12 policies are embedded using Gemini Embedding 2 (`RETRIEVAL_DOCUMENT` mode, 3072-dim) and stored in a FAISS index.
 2. **Query time:** Each code chunk → LLaMA 8B summary → Gemini Embedding (`RETRIEVAL_QUERY` mode).
 3. **Search:** FAISS nearest-neighbor search returns the top-3 semantically matching policies.
-4. **Efficiency:** CodeBERT runs only on these 3 policies (not all 12) → saves **75% of inference cost**.
+4. **Efficiency:** CodeBERT runs only on these 3 policies (not all 12) → so CodeBERT makes **75% fewer classifier calls per chunk** (3 of 12).
 
 ### Key Stats
 
@@ -197,13 +197,13 @@ The system enforces **12 policies across 5 domains**:
 |--------|-------|
 | Embedding dimensions | 3072 |
 | Policies retrieved per chunk | Top-3 |
-| CodeBERT inference cost reduction | 75% |
+| CodeBERT calls per chunk vs. all policies | 3 of 12 (75% fewer) |
 
 ### Why Two LLMs?
 
 **LLaMA 3.1 8B** — Fast and cheap. Used only for generating 2–3 sentence business summaries to drive retrieval. No compliance reasoning required at this step.
 
-**Kimi K2 Instruct** — A reasoning model. Used for deep compliance judgment with structured JSON output. Only called when needed (ambiguous zone or high-confidence confirmation).
+**Kimi K2 Instruct** — A reasoning model. Used for deep compliance judgment with structured JSON output. By default it is called for every chunk, to write the explanation, and it gives the full verdict for ambiguous chunks. With `AUDITIX_EXPLAIN_FAST_PATH=0` it is only called for ambiguous chunks.
 
 > Separating concerns = lower cost + higher quality on the hard task.
 
@@ -583,7 +583,7 @@ Each code chunk produces a verdict in this schema:
 
 | Value | Meaning |
 |-------|---------|
-| `[Hybrid/high-confidence→LLM-explain]` | Classifier was confident; the verdict is the classifier's |
+| `[Hybrid/high-confidence→LLM-explain]` | Classifier was confident; the verdict is the classifier's. This label is used for both fast-path verdicts (violation and compliant), so read the `compliant` field to tell them apart |
 | `[Hybrid/ambiguous→full-LLM]` | Probability in the 35–65% band; Kimi K2 decided |
 | `[LLM-only]` | No classifier loaded; Kimi K2 decided |
 
