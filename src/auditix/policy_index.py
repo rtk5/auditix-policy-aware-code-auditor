@@ -26,31 +26,38 @@ POLICIES_FILE = "policies.json"
 
 
 class Embedder(Protocol):
+    """Anything that can embed documents and queries (Gemini in production, a fake in tests)."""
+
     def embed_documents(self, texts: Sequence[str]) -> np.ndarray: ...
     def embed_query(self, text: str) -> np.ndarray: ...
 
 
 class PolicyIndex:
+    """Policy texts plus a FAISS index whose row ``i`` holds the vector of ``policies[i]``."""
+
     def __init__(self, policies: Sequence[str], index, embedder: Embedder | None = None):
         self.policies: list[str] = list(policies)
-        self._index = index
-        self._embedder = embedder
+        self._index = index          # the FAISS index object
+        self._embedder = embedder    # needed only for search(); save/load work without it
 
     @property
     def size(self) -> int:
+        """Number of policies in the index."""
         return int(self._index.ntotal)
 
     @classmethod
     def build(cls, policies: Sequence[str], embedder: Embedder) -> "PolicyIndex":
+        """Embed every policy and load the vectors into a new exact (flat L2) index."""
         import faiss
 
         vectors = embedder.embed_documents(list(policies))
-        index = faiss.IndexFlatL2(vectors.shape[1])
+        index = faiss.IndexFlatL2(vectors.shape[1])  # exact search, fine for small policy sets
         index.add(vectors)
         logger.info("Built FAISS index: %d policies, dimension %d", index.ntotal, vectors.shape[1])
         return cls(policies, index, embedder)
 
     def save(self, directory: str | Path) -> None:
+        """Write the FAISS index and the policy list to ``directory``."""
         import faiss
 
         directory = Path(directory)
@@ -60,6 +67,7 @@ class PolicyIndex:
 
     @classmethod
     def load(cls, directory: str | Path, embedder: Embedder | None = None) -> "PolicyIndex":
+        """Read an index saved by :meth:`save`. Pass an embedder if you intend to search."""
         import faiss
 
         directory = Path(directory)
@@ -75,6 +83,7 @@ class PolicyIndex:
         directory = Path(directory)
         if (directory / INDEX_FILE).exists() and (directory / POLICIES_FILE).exists():
             saved = cls.load(directory, embedder)
+            # Compare the saved text with the current list: any edit forces a rebuild.
             if saved.policies == list(policies):
                 logger.info("Loaded cached policy index from %s", directory)
                 return saved
@@ -87,7 +96,7 @@ class PolicyIndex:
         """Return the ``top_k`` policies closest to ``query_text`` (best first)."""
         if self._embedder is None:
             raise RuntimeError("PolicyIndex has no embedder attached; cannot embed queries")
-        k = min(top_k, self.size)
+        k = min(top_k, self.size)  # cannot ask FAISS for more neighbours than it holds
         query = self._embedder.embed_query(query_text)
-        _, indices = self._index.search(query, k)
+        _, indices = self._index.search(query, k)  # distances are ignored; only order matters
         return [self.policies[i] for i in indices[0] if 0 <= i < len(self.policies)]
