@@ -36,13 +36,15 @@ class AuditContext:
     settings: Settings
     policies: list[str]
     index: PolicyIndex
-    classifier: PolicyClassifier | None
+    classifier: PolicyClassifier | None  # None means LLM-only mode
+    # The two LLM calls are fields so tests can swap them for fakes.
     summarize: Callable[[str], str] = summarize_chunk
     llm_audit: Callable[..., dict[str, Any]] = audit_chunk
     pause_seconds: float = 1.0  # gentle pacing between LLM calls (rate limits)
 
     @property
     def audit_mode(self) -> str:
+        """"hybrid" when a classifier is loaded, otherwise "llm-only"."""
         return "hybrid" if self.classifier is not None else "llm-only"
 
 
@@ -61,7 +63,7 @@ def build_context(
     settings = settings or Settings.from_env()
     policies = load_policies(settings.policies_path)
     embedder = embedder or GeminiEmbedder()
-    index = PolicyIndex.load_or_build(policies, settings.index_dir, embedder)
+    index = PolicyIndex.load_or_build(policies, settings.index_dir, embedder)  # cached on disk
     if classifier == "auto":
         classifier = load_classifier(settings.classifier_path, enabled=settings.use_classifier)
     logger.info("Audit mode: %s (%d policies indexed)", "hybrid" if classifier else "llm-only", len(policies))
@@ -98,6 +100,7 @@ def audit_source(source_code: str, filename: str, ctx: AuditContext) -> dict[str
             explain_fast_path=ctx.settings.explain_fast_path,
         )
 
+        # Store everything the report needs, including the routing details.
         report["chunks"].append({
             "name": chunk.name,
             "type": chunk.kind,
@@ -117,7 +120,7 @@ def audit_source(source_code: str, filename: str, ctx: AuditContext) -> dict[str
             report["summary"]["critical"] += 1
 
         if ctx.pause_seconds:
-            time.sleep(ctx.pause_seconds)
+            time.sleep(ctx.pause_seconds)  # keep request rate under the Groq limits
     return report
 
 
@@ -126,11 +129,11 @@ def collect_python_files(root: str | Path) -> list[Path]:
     root = Path(root)
     files: list[Path] = []
     for path in root.rglob("*.py"):
-        rel_parts = path.relative_to(root).parts[:-1]
+        rel_parts = path.relative_to(root).parts[:-1]  # folder names only, not the file name
         if any(part in SKIP_DIRS for part in rel_parts):
             continue
         files.append(path)
-    return sorted(files)
+    return sorted(files)  # sorted so runs are repeatable
 
 
 def audit_directory(root: str | Path, ctx: AuditContext) -> dict[str, Any]:
@@ -139,17 +142,18 @@ def audit_directory(root: str | Path, ctx: AuditContext) -> dict[str, Any]:
     reports: list[dict[str, Any]] = []
     for path in collect_python_files(root):
         code = path.read_text(encoding="utf-8", errors="ignore")
-        if len(code.strip()) < MIN_FILE_CHARS:
+        if len(code.strip()) < MIN_FILE_CHARS:  # skip near-empty files (e.g. empty __init__.py)
             continue
-        reports.append(audit_source(code, path.relative_to(root).as_posix(), ctx))
+        reports.append(audit_source(code, path.relative_to(root).as_posix(), ctx))  # POSIX-style paths
     return _aggregate(reports, ctx)
 
 
 def _aggregate(reports: Sequence[dict[str, Any]], ctx: AuditContext) -> dict[str, Any]:
+    """Add up the per-file totals and compute the overall compliance rate."""
     total = sum(r["summary"]["total"] for r in reports)
     violations = sum(r["summary"]["violations"] for r in reports)
     critical = sum(r["summary"]["critical"] for r in reports)
-    rate = round((total - violations) / total * 100) if total else 0
+    rate = round((total - violations) / total * 100) if total else 0  # 0 when nothing was audited
     return {
         "audit_mode": ctx.audit_mode,
         "reports": list(reports),
@@ -179,9 +183,9 @@ def run_audit_local(
     **ctx_kwargs: Any,
 ) -> dict[str, Any]:
     """Audit a folder on disk and write the reports."""
-    ctx = ctx or build_context(**ctx_kwargs)
+    ctx = ctx or build_context(**ctx_kwargs)  # build the context only if the caller did not
     results = audit_directory(code_dir, ctx)
-    results["source"] = str(code_dir)
+    results["source"] = str(code_dir)  # record where the code came from
     out = Path(output_dir) if output_dir else ctx.settings.output_dir
     write_outputs(results, out)
     logger.info("Reports written to %s", out)
@@ -191,6 +195,7 @@ def run_audit_local(
 def clone_repo(repo_url: str, destination: str | Path) -> Path:
     """Shallow-clone ``repo_url`` into ``destination`` using the git CLI."""
     destination = Path(destination)
+    # --depth 1: only the latest commit, which is all the audit needs and is much faster.
     subprocess.run(["git", "clone", "--depth", "1", repo_url, str(destination)], check=True)
     return destination
 
@@ -203,6 +208,7 @@ def run_audit_repo(
 ) -> dict[str, Any]:
     """Clone a GitHub repository to a temporary folder, audit it, write reports."""
     ctx = ctx or build_context(**ctx_kwargs)
+    # The temporary folder (and the clone) is deleted automatically when the block ends.
     with tempfile.TemporaryDirectory(prefix="auditix-") as tmp:
         clone_dir = clone_repo(repo_url, Path(tmp) / "repo")
         results = audit_directory(clone_dir, ctx)
