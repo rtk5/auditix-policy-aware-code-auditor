@@ -2,6 +2,7 @@ import json
 
 from auditix.reporting import write_json, write_pdf
 
+# Sample results with '<' and '&' characters, to check escaping in the PDF.
 RESULTS = {
     "audit_mode": "llm-only",
     "reports": [{
@@ -18,11 +19,13 @@ RESULTS = {
 }
 
 
+# What is written to JSON reads back unchanged.
 def test_write_json_round_trip(tmp_path):
     path = write_json(RESULTS, tmp_path / "out" / "audit_results.json")
     assert json.loads(path.read_text(encoding="utf-8")) == RESULTS
 
 
+# The output is a real PDF (starts with %PDF) with content.
 def test_write_pdf_creates_non_empty_file(tmp_path):
     path = write_pdf(RESULTS, tmp_path / "audit_report.pdf")
     data = path.read_bytes()
