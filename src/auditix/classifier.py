@@ -21,23 +21,26 @@ VIOLATION_LABEL = 1  # index of the VIOLATION logit in the saved model
 
 
 class PolicyClassifier:
+    """A loaded CodeBERT classifier ready to score (code, policy) pairs."""
+
     def __init__(self, model, tokenizer, device: str):
         self.model = model
         self.tokenizer = tokenizer
-        self.device = device
+        self.device = device  # "cuda" or "cpu"
 
     @classmethod
     def from_pretrained(cls, path: str | Path, device: str | None = None) -> "PolicyClassifier":
+        """Load the tokenizer and model from ``path`` and move the model to the device."""
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")  # GPU if possible
         path = str(path)
         tokenizer = AutoTokenizer.from_pretrained(path)
         # The folder holds a LoRA adapter; transformers loads the base CodeBERT
         # weights named in adapter_config.json and attaches the adapter.
         model = AutoModelForSequenceClassification.from_pretrained(path)
-        model.to(device).eval()
+        model.to(device).eval()  # eval(): turns off dropout for inference
         logger.info("Loaded CodeBERT policy classifier from %s on %s", path, device)
         return cls(model, tokenizer, device)
 
@@ -45,6 +48,7 @@ class PolicyClassifier:
         """Return p(VIOLATION) for one (code, policy) pair, in [0, 1]."""
         import torch
 
+        # Encode code and policy as one sentence pair, padded/truncated to a fixed length.
         enc = self.tokenizer(
             code,
             policy,
@@ -54,8 +58,8 @@ class PolicyClassifier:
             return_tensors="pt",
         )
         enc = {k: v.to(self.device) for k, v in enc.items()}
-        with torch.no_grad():
-            probs = torch.softmax(self.model(**enc).logits, dim=-1)[0]
+        with torch.no_grad():  # no gradients needed for inference: saves memory and time
+            probs = torch.softmax(self.model(**enc).logits, dim=-1)[0]  # logits -> probabilities
         return float(probs[VIOLATION_LABEL].item())
 
 
